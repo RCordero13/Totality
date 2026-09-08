@@ -6,6 +6,8 @@ export const SETTING_KEYS = {
   // Completeness settings
   completeness_include_eps: 'completeness_include_eps',
   completeness_include_singles: 'completeness_include_singles',
+  exclude_empty_seasons: 'exclude_empty_seasons',
+  collection_theatrical_lag_days: 'collection_theatrical_lag_days',
 
   // API keys & services
   tmdb_api_key: 'tmdb_api_key',

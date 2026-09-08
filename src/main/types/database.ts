@@ -347,6 +347,7 @@ export interface MissingMovie {
   title: string
   year?: number
   poster_path?: string
+  release_date?: string // YYYY-MM-DD theatrical release date from TMDB
 }
 
 export interface MissingEpisode {

@@ -270,6 +270,7 @@ export class MovieCollectionService extends CancellableOperation {
         title: part.title,
         year: part.release_date ? parseInt(part.release_date.split('-')[0], 10) : undefined,
         poster_path: part.poster_path ? tmdb.buildImageUrl(part.poster_path, 'w300') || undefined : undefined,
+        release_date: part.release_date || undefined,
       }))
 
     const totalMovies = releasedParts.length

@@ -407,33 +407,43 @@ export function MediaBrowser({
   // Load completeness data (non-blocking background load)
   const loadCompletenessData = async () => {
     try {
-      const [seriesData, collectionsData, , , collectionExclusions, seriesExclusions] = await Promise.all([
+      const [seriesData, collectionsData, , , collectionExclusions, seriesExclusions, emptySeasonsSetting, theatricalLagSetting] = await Promise.all([
         window.electronAPI.seriesGetAll(activeSourceId || undefined),
         window.electronAPI.collectionsGetAll(activeSourceId || undefined),
         window.electronAPI.seriesGetStats(),
         window.electronAPI.collectionsGetStats(),
         window.electronAPI.getExclusions('collection_movie'),
         window.electronAPI.getExclusions('series_episode'),
+        window.electronAPI.getSetting(SETTING_KEYS.exclude_empty_seasons),
+        window.electronAPI.getSetting(SETTING_KEYS.collection_theatrical_lag_days),
       ])
+      const excludeEmptySeasons = emptySeasonsSetting === 'true'
+      const theatricalLagDays = parseInt((theatricalLagSetting as string) || '0', 10) || 0
 
       // Build exclusion lookup sets
       const excludedCollectionMovies = new Set(collectionExclusions.map((e: { parent_key: string | null; reference_key: string | null }) => `${e.parent_key}:${e.reference_key}`))
       const excludedSeriesEpisodes = new Set(seriesExclusions.map((e: { parent_key: string | null; reference_key: string | null }) => `${e.parent_key}:${e.reference_key}`))
 
-      // Filter collections: remove excluded missing movies, adjust totals
+      // Filter collections: remove excluded missing movies + theatrical-only films, adjust totals
+      const theatricalCutoff = theatricalLagDays > 0
+        ? (() => { const d = new Date(); d.setDate(d.getDate() - theatricalLagDays); return d.toISOString().split('T')[0] })()
+        : null
       const filteredCollections = (collectionsData as MovieCollectionData[])
         .map(c => {
           try {
-            const missing = JSON.parse(c.missing_movies || '[]')
-            const filtered = missing.filter((m: { tmdb_id: string }) => !excludedCollectionMovies.has(`${c.tmdb_collection_id}:${m.tmdb_id}`))
-            if (filtered.length !== missing.length) {
-              const excludedCount = missing.length - filtered.length
+            const rawMissing = JSON.parse(c.missing_movies || '[]') as Array<{ tmdb_id: string; release_date?: string }>
+            let filtered = rawMissing.filter(m => !excludedCollectionMovies.has(`${c.tmdb_collection_id}:${m.tmdb_id}`))
+            if (theatricalCutoff) {
+              filtered = filtered.filter(m => !m.release_date || m.release_date <= theatricalCutoff)
+            }
+            if (filtered.length !== rawMissing.length) {
+              const excludedCount = rawMissing.length - filtered.length
               const newTotal = c.total_movies - excludedCount
               return {
                 ...c,
                 missing_movies: JSON.stringify(filtered),
                 total_movies: newTotal,
-                completeness_percentage: newTotal > 0 ? c.owned_movies / newTotal * 100 : 100
+                completeness_percentage: newTotal > 0 ? Math.round(c.owned_movies / newTotal * 100) : 100,
               }
             }
           } catch { /* keep original */ }
@@ -442,17 +452,35 @@ export function MediaBrowser({
         .filter(c => c.total_movies > 1)
       setMovieCollections(filteredCollections)
 
-      // Filter series: remove excluded missing episodes
+      // Filter series: remove excluded episodes + empty seasons, adjust totals
       const seriesMap = new Map<string, SeriesCompletenessData>()
       ;(seriesData as SeriesCompletenessData[]).forEach(s => {
         try {
-          const missing = JSON.parse(s.missing_episodes || '[]')
+          const rawMissing: Array<{ season_number: number; episode_number: number }> = JSON.parse(s.missing_episodes || '[]')
           const parentKey = s.tmdb_id || s.series_title
-          const filtered = missing.filter((ep: { season_number: number; episode_number: number }) =>
+
+          // Step 1: individual episode exclusions
+          let filtered = rawMissing.filter(ep =>
             !excludedSeriesEpisodes.has(`${parentKey}:S${ep.season_number}E${ep.episode_number}`)
           )
-          if (filtered.length !== missing.length) {
-            seriesMap.set(s.series_title, { ...s, missing_episodes: JSON.stringify(filtered) })
+
+          // Step 2: exclude seasons where user owns 0 episodes
+          if (excludeEmptySeasons) {
+            const emptySeasons = new Set<number>(JSON.parse(s.missing_seasons || '[]'))
+            filtered = filtered.filter(ep => !emptySeasons.has(ep.season_number))
+          }
+
+          const excludedCount = rawMissing.length - filtered.length
+          if (excludedCount > 0) {
+            const newTotal = Math.max(s.owned_episodes, s.total_episodes - excludedCount)
+            seriesMap.set(s.series_title, {
+              ...s,
+              missing_episodes: JSON.stringify(filtered),
+              total_episodes: newTotal,
+              completeness_percentage: newTotal > 0
+                ? Math.round((s.owned_episodes / newTotal) * 100)
+                : 100,
+            })
             return
           }
         } catch { /* keep original */ }
@@ -901,6 +929,7 @@ export function MediaBrowser({
     handleDismissMissingEpisode,
     handleDismissMissingSeason,
     handleDismissCollectionMovie,
+    handleDismissAllMissingInCollection,
     handleDismissMissingAlbum,
     handleDismissMissingItem,
   } = useDismissHandlers({
@@ -2441,6 +2470,7 @@ export function MediaBrowser({
             setSelectedMediaId(movieId)
           }}
           onDismissCollectionMovie={handleDismissCollectionMovie}
+          onDismissAllMissingInCollection={handleDismissAllMissingInCollection}
         />
       )}
 
