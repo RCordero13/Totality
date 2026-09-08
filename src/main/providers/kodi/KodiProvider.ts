@@ -9,7 +9,7 @@ import { getErrorMessage } from '../../services/utils/errorUtils'
  * The library must already be scanned in Kodi before it can be accessed.
  */
 
-import axios, { AxiosInstance } from 'axios'
+import { fetchJSON, basicAuthHeader } from '../../services/utils/httpClient'
 import * as fs from 'fs'
 import { getDatabase } from '../../database/getDatabase'
 import { getQualityAnalyzer } from '../../services/QualityAnalyzer'
@@ -171,7 +171,6 @@ export class KodiProvider implements MediaProvider {
   private port: number = 8080
   private username?: string
   private password?: string
-  private api: AxiosInstance
   private rpcId: number = 1
 
   // Cancellation support
@@ -188,9 +187,6 @@ export class KodiProvider implements MediaProvider {
       this.password = config.connectionConfig.password as string | undefined
     }
 
-    this.api = axios.create({
-      timeout: 30000,
-    })
   }
 
   private generateSourceId(): string {
@@ -201,40 +197,29 @@ export class KodiProvider implements MediaProvider {
     return `http://${this.host}:${this.port}`
   }
 
-  private getAuthConfig(): { auth?: { username: string; password: string } } {
+  private getAuthHeader(): Record<string, string> {
     if (this.username && this.password) {
-      return {
-        auth: {
-          username: this.username,
-          password: this.password,
-        },
-      }
+      return { Authorization: basicAuthHeader(this.username, this.password) }
     }
     return {}
   }
 
   private async rpcCall<T>(method: string, params?: Record<string, unknown>): Promise<T> {
-    const response = await this.api.post<KodiRpcResponse<T>>(
+    const data = await fetchJSON<KodiRpcResponse<T>>(
       `${this.getBaseUrl()}/jsonrpc`,
       {
-        jsonrpc: '2.0',
-        method,
-        params,
-        id: this.rpcId++,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        ...this.getAuthConfig(),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.getAuthHeader() },
+        body: JSON.stringify({ jsonrpc: '2.0', method, params, id: this.rpcId++ }),
+        timeoutMs: 30_000,
       }
     )
 
-    if (response.data.error) {
-      throw new Error(`Kodi RPC error: ${response.data.error.message}`)
+    if (data.error) {
+      throw new Error(`Kodi RPC error: ${data.error.message}`)
     }
 
-    return response.data.result as T
+    return data.result as T
   }
 
   // ============================================================================

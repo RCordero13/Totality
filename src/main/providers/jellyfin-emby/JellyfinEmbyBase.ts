@@ -1,4 +1,4 @@
-import { getErrorMessage, isAxiosError, isNodeError } from '../../services/utils/errorUtils'
+import { getErrorMessage, isHttpError, isNodeError } from '../../services/utils/errorUtils'
 import { retryWithBackoff } from '../../services/utils/retryWithBackoff'
 /**
  * JellyfinEmbyBase
@@ -8,7 +8,7 @@ import { retryWithBackoff } from '../../services/utils/retryWithBackoff'
  */
 
 import * as path from 'path'
-import axios, { AxiosInstance } from 'axios'
+import { fetchJSON, fetchWithTimeout, buildUrl } from '../../services/utils/httpClient'
 import { getDatabase } from '../../database/getDatabase'
 import { getQualityAnalyzer } from '../../services/QualityAnalyzer'
 import { getMovieCollectionService } from '../../services/MovieCollectionService'
@@ -213,7 +213,6 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
   protected apiKey: string = ''
   protected userId: string = ''
   protected accessToken: string = ''
-  protected api: AxiosInstance
   protected config: SourceConfig
 
   // Cancellation support
@@ -237,9 +236,6 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
       this.userId = (config.connectionConfig.userId as string) || ''
     }
 
-    this.api = axios.create({
-      timeout: 30000,
-    })
   }
 
   protected generateSourceId(): string {
@@ -361,30 +357,25 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
 
       // Option 2: Username/Password authentication
       if (credentials.username && credentials.password) {
-        const response = await this.api.post<JellyfinAuthResponse>(
+        const data = await fetchJSON<JellyfinAuthResponse>(
           `${this.serverUrl}/Users/AuthenticateByName`,
           {
-            Username: credentials.username,
-            Pw: credentials.password,
-          },
-          {
-            headers: {
-              ...this.getAuthHeaders(),
-              'X-Emby-Authorization': this.buildAuthHeader(),
-            },
+            method: 'POST',
+            headers: { ...this.getAuthHeaders(), 'X-Emby-Authorization': this.buildAuthHeader() },
+            body: JSON.stringify({ Username: credentials.username, Pw: credentials.password }),
           }
         )
 
-        if (response.data.AccessToken) {
-          this.accessToken = response.data.AccessToken
-          this.userId = response.data.User.Id
+        if (data.AccessToken) {
+          this.accessToken = data.AccessToken
+          this.userId = data.User.Id
 
           return {
             success: true,
-            token: response.data.AccessToken,
-            userId: response.data.User.Id,
-            userName: response.data.User.Name,
-            serverName: response.data.ServerId,
+            token: data.AccessToken,
+            userId: data.User.Id,
+            userName: data.User.Name,
+            serverName: data.ServerId,
           }
         }
       }
@@ -394,7 +385,7 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
       console.error(`${this.providerType} authentication failed:`, error)
       return {
         success: false,
-        error: (isAxiosError(error) ? (error.response?.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error) || 'Authentication failed',
+        error: (isHttpError(error) ? (error.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error) || 'Authentication failed',
       }
     }
   }
@@ -420,10 +411,10 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     if (!this.serverUrl) return false
 
     try {
-      const response = await this.api.get(`${this.serverUrl}/QuickConnect/Enabled`, {
-        timeout: 5000,
-      })
-      return response.data === true
+      const response = await fetchWithTimeout(`${this.serverUrl}/QuickConnect/Enabled`, {}, 5000)
+      if (!response.ok) return false
+      const data = await response.json()
+      return data === true
     } catch {
       return false
     }
@@ -438,23 +429,15 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.post(
+      const data = await fetchJSON<{ Secret: string; Code: string }>(
         `${this.serverUrl}/QuickConnect/Initiate`,
-        null,
-        {
-          headers: {
-            'X-Emby-Authorization': this.buildAuthHeader(),
-          },
-        }
+        { method: 'POST', headers: { 'X-Emby-Authorization': this.buildAuthHeader() } }
       )
 
-      return {
-        secret: response.data.Secret,
-        code: response.data.Code,
-      }
+      return { secret: data.Secret, code: data.Code }
     } catch (error: unknown) {
       console.error('Failed to initiate Quick Connect:', error)
-      throw new Error((isAxiosError(error) ? (error.response?.data as JellyfinErrorResponse)?.message : undefined) || 'Failed to initiate Quick Connect')
+      throw new Error((isHttpError(error) ? (error.data as JellyfinErrorResponse)?.message : undefined) || 'Failed to initiate Quick Connect')
     }
   }
 
@@ -470,23 +453,16 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
-        `${this.serverUrl}/QuickConnect/Connect`,
-        {
-          params: { Secret: secret },
-          headers: {
-            'X-Emby-Authorization': this.buildAuthHeader(),
-          },
-        }
+      const data = await fetchJSON<{ Authenticated: boolean }>(
+        buildUrl(`${this.serverUrl}/QuickConnect/Connect`, { Secret: secret }),
+        { headers: { 'X-Emby-Authorization': this.buildAuthHeader() } }
       )
 
-      return {
-        authenticated: response.data.Authenticated === true,
-      }
+      return { authenticated: data.Authenticated === true }
     } catch (error: unknown) {
       return {
         authenticated: false,
-        error: (isAxiosError(error) ? (error.response?.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error),
+        error: (isHttpError(error) ? (error.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error),
       }
     }
   }
@@ -500,25 +476,24 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.post<JellyfinAuthResponse>(
+      const data = await fetchJSON<JellyfinAuthResponse>(
         `${this.serverUrl}/Users/AuthenticateWithQuickConnect`,
-        { Secret: secret },
         {
-          headers: {
-            'X-Emby-Authorization': this.buildAuthHeader(),
-          },
+          method: 'POST',
+          headers: { ...this.getAuthHeaders(), 'X-Emby-Authorization': this.buildAuthHeader() },
+          body: JSON.stringify({ Secret: secret }),
         }
       )
 
-      if (response.data.AccessToken) {
-        this.accessToken = response.data.AccessToken
-        this.userId = response.data.User.Id
+      if (data.AccessToken) {
+        this.accessToken = data.AccessToken
+        this.userId = data.User.Id
 
         return {
           success: true,
-          token: response.data.AccessToken,
-          userId: response.data.User.Id,
-          userName: response.data.User.Name,
+          token: data.AccessToken,
+          userId: data.User.Id,
+          userName: data.User.Name,
         }
       }
 
@@ -527,7 +502,7 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
       console.error('Quick Connect authentication failed:', error)
       return {
         success: false,
-        error: (isAxiosError(error) ? (error.response?.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error) || 'Quick Connect failed',
+        error: (isHttpError(error) ? (error.data as JellyfinErrorResponse)?.message : undefined) || getErrorMessage(error) || 'Quick Connect failed',
       }
     }
   }
@@ -543,21 +518,21 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
 
     try {
       const startTime = Date.now()
-      const response = await this.api.get(`${this.serverUrl}/System/Info/Public`, {
-        headers: this.getAuthHeaders(),
-        timeout: 10000,
-      })
+      const data = await fetchJSON<{ ServerName: string; Version: string }>(
+        `${this.serverUrl}/System/Info/Public`,
+        { headers: this.getAuthHeaders(), timeoutMs: 10_000 }
+      )
       const latencyMs = Date.now() - startTime
 
       return {
         success: true,
-        serverName: response.data.ServerName,
-        serverVersion: response.data.Version,
+        serverName: data.ServerName,
+        serverVersion: data.Version,
         latencyMs,
       }
     } catch (error: unknown) {
       // Provide more helpful error messages
-      const status = (isAxiosError(error) ? error.response?.status : undefined)
+      const status = (isHttpError(error) ? error.status : undefined)
       if (status === 401) {
         return {
           success: false,
@@ -608,16 +583,16 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
       if (this.userId) {
         try {
           console.log(`[${this.providerType}] Fetching user views for userId: ${this.userId}`)
-          const response = await this.api.get<{ Items: JellyfinLibrary[] }>(
+          const viewsData = await fetchJSON<{ Items: JellyfinLibrary[] }>(
             `${this.serverUrl}/Users/${this.userId}/Views`,
             { headers: this.getAuthHeaders() }
           )
 
-          console.log(`[${this.providerType}] Got ${response.data.Items?.length || 0} views`)
+          console.log(`[${this.providerType}] Got ${viewsData.Items?.length || 0} views`)
 
           // Filter for supported library types (video + music)
           const mediaTypes = ['movies', 'tvshows', 'homevideos', 'musicvideos', 'mixed', 'boxsets', 'music']
-          const libraries = response.data.Items
+          const libraries = viewsData.Items
             .filter(lib => {
               const collType = (lib.CollectionType || '').toLowerCase()
               // Include if it's a known media type, or if CollectionType is empty (might be a media folder)
@@ -638,20 +613,20 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
 
           console.log(`[${this.providerType}] No video libraries found in views, trying VirtualFolders`)
         } catch (viewsError: unknown) {
-          const status = isAxiosError(viewsError) ? viewsError.response?.status : undefined
-          const data = isAxiosError(viewsError) ? viewsError.response?.data : undefined
-          console.warn(`[${this.providerType}] Failed to get user views:`, status, data || getErrorMessage(viewsError))
+          const status = isHttpError(viewsError) ? viewsError.status : undefined
+          const errData = isHttpError(viewsError) ? viewsError.data : undefined
+          console.warn(`[${this.providerType}] Failed to get user views:`, status, errData || getErrorMessage(viewsError))
         }
       }
 
       // Fallback to VirtualFolders (requires admin or API key)
       console.log(`[${this.providerType}] Fetching VirtualFolders`)
-      const response = await this.api.get<JellyfinLibrary[]>(
+      const foldersData = await fetchJSON<JellyfinLibrary[] | { Items?: JellyfinLibrary[] }>(
         `${this.serverUrl}/Library/VirtualFolders`,
         { headers: this.getAuthHeaders() }
       )
 
-      const folders = Array.isArray(response.data) ? response.data : (response.data as { Items?: JellyfinLibrary[] }).Items || []
+      const folders = Array.isArray(foldersData) ? foldersData : (foldersData as { Items?: JellyfinLibrary[] }).Items || []
       console.log(`[${this.providerType}] Got ${folders.length} virtual folders`)
 
       const mediaTypes = ['movies', 'tvshows', 'homevideos', 'musicvideos', 'music', 'boxsets']
@@ -665,10 +640,9 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
           itemCount: lib.ItemCount,
         }))
     } catch (error: unknown) {
-      console.error(`[${this.providerType}] Failed to get libraries:`, (isAxiosError(error) ? error.response?.status : undefined), (isAxiosError(error) ? error.response?.data : undefined) || getErrorMessage(error))
+      const status = isHttpError(error) ? error.status : undefined
+      console.error(`[${this.providerType}] Failed to get libraries:`, status, isHttpError(error) ? error.data : getErrorMessage(error))
 
-      // Provide more helpful error messages
-      const status = (isAxiosError(error) ? error.response?.status : undefined)
       if (status === 401) {
         throw new Error('Authentication failed (401): Access token is invalid or expired. Please re-authenticate this source.')
       } else if (status === 403) {
@@ -681,7 +655,7 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
         throw new Error('Server not found: The hostname could not be resolved.')
       }
 
-      throw new Error(`Failed to fetch libraries: ${(isAxiosError(error) ? (error.response?.data as JellyfinErrorResponse)?.Message : undefined) || getErrorMessage(error)}`)
+      throw new Error(`Failed to fetch libraries: ${(isHttpError(error) ? (error.data as JellyfinErrorResponse)?.Message : undefined) || getErrorMessage(error)}`)
     }
   }
 
@@ -707,22 +681,19 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get<{ Items: JellyfinMediaItem[] }>(
-        `${this.serverUrl}/Items`,
-        {
-          headers: this.getAuthHeaders(),
-          params: {
-            ParentId: libraryId,
-            Recursive: true,
-            IncludeItemTypes: 'Movie,Episode',
-            Fields: 'Path,MediaSources,ProviderIds,Overview',
-            StartIndex: offset,
-            Limit: limit,
-          },
-        }
+      const data = await fetchJSON<{ Items: JellyfinMediaItem[] }>(
+        buildUrl(`${this.serverUrl}/Items`, {
+          ParentId: libraryId,
+          Recursive: true,
+          IncludeItemTypes: 'Movie,Episode',
+          Fields: 'Path,MediaSources,ProviderIds,Overview',
+          StartIndex: offset,
+          Limit: limit,
+        }),
+        { headers: this.getAuthHeaders() }
       )
 
-      return response.data.Items.map(item => this.convertToMediaMetadata(item))
+      return data.Items.map(item => this.convertToMediaMetadata(item))
     } catch (error: unknown) {
       console.error('Failed to get library items:', error)
       throw new Error('Failed to fetch library items')
@@ -735,17 +706,12 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get<JellyfinMediaItem>(
-        `${this.serverUrl}/Items/${itemId}`,
-        {
-          headers: this.getAuthHeaders(),
-          params: {
-            Fields: 'Path,MediaSources,ProviderIds,Overview',
-          },
-        }
+      const data = await fetchJSON<JellyfinMediaItem>(
+        buildUrl(`${this.serverUrl}/Items/${itemId}`, { Fields: 'Path,MediaSources,ProviderIds,Overview' }),
+        { headers: this.getAuthHeaders() }
       )
 
-      return this.convertToMediaMetadata(response.data)
+      return this.convertToMediaMetadata(data)
     } catch (error: unknown) {
       console.error('Failed to get item metadata:', error)
       throw error
@@ -799,23 +765,20 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
         let hasMoreBoxsets = true
 
         while (hasMoreBoxsets) {
-          const boxsetResponse = await this.api.get<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
-            `${this.serverUrl}/Items`,
-            {
-              headers: this.getAuthHeaders(),
-              params: {
-                ParentId: libraryId,
-                Recursive: true,
-                IncludeItemTypes: 'BoxSet',
-                Fields: 'ProviderIds,ImageTags',
-                EnableTotalRecordCount: true,
-                StartIndex: boxsetOffset,
-                Limit: batchSize,
-              },
-            }
+          const boxsetResponse = await fetchJSON<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
+            buildUrl(`${this.serverUrl}/Items`, {
+              ParentId: libraryId,
+              Recursive: true,
+              IncludeItemTypes: 'BoxSet',
+              Fields: 'ProviderIds,ImageTags',
+              EnableTotalRecordCount: true,
+              StartIndex: boxsetOffset,
+              Limit: batchSize,
+            }),
+            { headers: this.getAuthHeaders() }
           )
-          boxsets.push(...boxsetResponse.data.Items)
-          if (boxsets.length >= boxsetResponse.data.TotalRecordCount || boxsetResponse.data.Items.length === 0) {
+          boxsets.push(...boxsetResponse.Items)
+          if (boxsets.length >= boxsetResponse.TotalRecordCount || boxsetResponse.Items.length === 0) {
             hasMoreBoxsets = false
           } else {
             boxsetOffset += batchSize
@@ -826,26 +789,23 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
 
         // Phase 2: For each BoxSet, fetch its child movies
         for (const boxset of boxsets) {
-          const movieResponse = await this.api.get<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
-            `${this.serverUrl}/Items`,
-            {
-              headers: this.getAuthHeaders(),
-              params: {
-                ParentId: boxset.Id,
-                Recursive: true,
-                IncludeItemTypes: 'Movie',
-                Fields: fieldsParam,
-                EnableImageTypes: 'Primary,Thumb,Screenshot,Banner,Backdrop',
-                EnableTotalRecordCount: true,
-                StartIndex: 0,
-                Limit: 1000, // BoxSets typically have <50 movies
-              },
-            }
+          const movieResponse = await fetchJSON<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
+            buildUrl(`${this.serverUrl}/Items`, {
+              ParentId: boxset.Id,
+              Recursive: true,
+              IncludeItemTypes: 'Movie',
+              Fields: fieldsParam,
+              EnableImageTypes: 'Primary,Thumb,Screenshot,Banner,Backdrop',
+              EnableTotalRecordCount: true,
+              StartIndex: 0,
+              Limit: 1000,
+            }),
+            { headers: this.getAuthHeaders() }
           )
-          allItems.push(...movieResponse.data.Items)
+          allItems.push(...movieResponse.Items)
 
           // Create a collection entry for this BoxSet
-          const ownedTmdbIds = movieResponse.data.Items
+          const ownedTmdbIds = movieResponse.Items
             .map(m => m.ProviderIds?.Tmdb)
             .filter(Boolean) as string[]
 
@@ -857,8 +817,8 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
               : undefined
 
             // Fallback: use first child movie's poster if BoxSet has no poster
-            const firstMoviePosterUrl = movieResponse.data.Items[0]?.ImageTags?.Primary
-              ? this.buildImageUrl(movieResponse.data.Items[0].Id, 'Primary', movieResponse.data.Items[0].ImageTags.Primary)
+            const firstMoviePosterUrl = movieResponse.Items[0]?.ImageTags?.Primary
+              ? this.buildImageUrl(movieResponse.Items[0].Id, 'Primary', movieResponse.Items[0].ImageTags.Primary)
               : undefined
 
             let totalMovies = ownedTmdbIds.length
@@ -951,17 +911,14 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
             params.MinDateLastSaved = sinceTimestamp.toISOString()
           }
 
-          const response = await this.api.get<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
-            `${this.serverUrl}/Items`,
-            {
-              headers: this.getAuthHeaders(),
-              params,
-            }
+          const response = await fetchJSON<{ Items: JellyfinMediaItem[]; TotalRecordCount: number }>(
+            buildUrl(`${this.serverUrl}/Items`, params as Record<string, string | number | boolean | null | undefined>),
+            { headers: this.getAuthHeaders() }
           )
 
-          allItems.push(...response.data.Items)
+          allItems.push(...response.Items)
 
-          if (allItems.length >= response.data.TotalRecordCount || response.data.Items.length === 0) {
+          if (allItems.length >= response.TotalRecordCount || response.Items.length === 0) {
             hasMoreItems = false
           } else {
             offset += batchSize
@@ -998,18 +955,12 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
         for (let i = 0; i < seriesIds.length; i += 50) {
           const batchIds = seriesIds.slice(i, i + 50)
           try {
-            const seriesResponse = await this.api.get<{ Items: JellyfinMediaItem[] }>(
-              `${this.serverUrl}/Items`,
-              {
-                headers: this.getAuthHeaders(),
-                params: {
-                  Ids: batchIds.join(','),
-                  Fields: 'ProviderIds,ImageTags,SortName',
-                },
-              }
+            const seriesResponse = await fetchJSON<{ Items: JellyfinMediaItem[] }>(
+              buildUrl(`${this.serverUrl}/Items`, { Ids: batchIds.join(','), Fields: 'ProviderIds,ImageTags,SortName' }),
+              { headers: this.getAuthHeaders() }
             )
 
-            for (const series of seriesResponse.data.Items) {
+            for (const series of seriesResponse.Items) {
               seriesMetadataMap.set(series.Id, {
                 providerIds: series.ProviderIds,
                 primaryImageTag: series.ImageTags?.Primary,
@@ -1727,24 +1678,21 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
       while (hasMore) {
         // Use /Artists/AlbumArtists endpoint - this returns the actual album artists
         // that appear in the Emby/Jellyfin UI, not all artist metadata entries
-        const response = await this.api.get<{ Items: JellyfinMusicArtist[]; TotalRecordCount?: number }>(
-          `${this.serverUrl}/Artists/AlbumArtists`,
-          {
-            headers: this.getAuthHeaders(),
-            params: {
-              ParentId: libraryId,
-              Fields: 'ProviderIds,Genres,Overview,ImageTags,SortName',
-              StartIndex: startIndex,
-              Limit: batchSize,
-              EnableTotalRecordCount: true,
-            },
-          }
+        const response = await fetchJSON<{ Items: JellyfinMusicArtist[]; TotalRecordCount?: number }>(
+          buildUrl(`${this.serverUrl}/Artists/AlbumArtists`, {
+            ParentId: libraryId,
+            Fields: 'ProviderIds,Genres,Overview,ImageTags,SortName',
+            StartIndex: startIndex,
+            Limit: batchSize,
+            EnableTotalRecordCount: true,
+          }),
+          { headers: this.getAuthHeaders() }
         )
 
-        const items = response.data.Items || []
+        const items = response.Items || []
         allArtists.push(...items)
 
-        const total = response.data.TotalRecordCount || items.length
+        const total = response.TotalRecordCount || items.length
         startIndex += items.length
         hasMore = startIndex < total && items.length === batchSize
       }
@@ -1790,18 +1738,15 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
           params.ParentId = libraryId
         }
 
-        const response = await this.api.get<{ Items: JellyfinMusicAlbum[]; TotalRecordCount?: number }>(
-          `${this.serverUrl}/Items`,
-          {
-            headers: this.getAuthHeaders(),
-            params,
-          }
+        const response = await fetchJSON<{ Items: JellyfinMusicAlbum[]; TotalRecordCount?: number }>(
+          buildUrl(`${this.serverUrl}/Items`, params as Record<string, string | number | boolean | null | undefined>),
+          { headers: this.getAuthHeaders() }
         )
 
-        const items = response.data.Items || []
+        const items = response.Items || []
         allAlbums.push(...items)
 
-        const total = response.data.TotalRecordCount || items.length
+        const total = response.TotalRecordCount || items.length
         startIndex += items.length
         hasMore = startIndex < total && items.length === batchSize
       }
@@ -1822,19 +1767,16 @@ export abstract class JellyfinEmbyBase implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get<{ Items: JellyfinMusicTrack[] }>(
-        `${this.serverUrl}/Items`,
-        {
-          headers: this.getAuthHeaders(),
-          params: {
-            ParentId: albumId,
-            IncludeItemTypes: 'Audio',
-            Fields: 'MediaSources,Path,ProviderIds,Artists,ArtistItems,ImageTags,PrimaryImageTag',
-          },
-        }
+      const response = await fetchJSON<{ Items: JellyfinMusicTrack[] }>(
+        buildUrl(`${this.serverUrl}/Items`, {
+          ParentId: albumId,
+          IncludeItemTypes: 'Audio',
+          Fields: 'MediaSources,Path,ProviderIds,Artists,ArtistItems,ImageTags,PrimaryImageTag',
+        }),
+        { headers: this.getAuthHeaders() }
       )
 
-      return response.data.Items || []
+      return response.Items || []
     } catch (error: unknown) {
       console.error(`[${this.providerType}] Failed to get music tracks:`, error)
       throw new Error('Failed to fetch music tracks')

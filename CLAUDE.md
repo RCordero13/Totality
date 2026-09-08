@@ -187,6 +187,12 @@ ipcMain.handle('namespace:method', async (_event, ...args) => {
 })
 ```
 
+**IPC Utilities** (`src/main/ipc/utils/`): Prefer these helpers for new handlers:
+- `createIpcHandler(channel, handler)` / `createIpcHandlerWithEvent(channel, handler)` — type-safe wrappers with consistent error logging
+- `safeSend(win, channel, ...args)` — safely sends to a BrowserWindow that may have been destroyed
+- `createProgressUpdater(win, progressChannel, updateType)` — returns `{ onProgress, flush }` that throttles progress events (250ms) and `library:updated` events (2s); call `flush()` when the operation completes
+- `createThrottledUpdater(win, updateType)` — simpler variant when you only need `library:updated` throttling, no progress channel
+
 **Renderer Usage**:
 ```typescript
 const result = await window.electronAPI.namespaceMethod(args)
@@ -250,10 +256,12 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 ### Path Aliases
 
 ```typescript
-@/*        → src/renderer/src/*
+@/*        → src/renderer/src/*   (Vite only — NOT available in Vitest)
 @main/*    → src/main/*
 @preload/* → src/preload/*
 ```
+
+**Note:** `@/*` is configured in `vite.config.ts` for the renderer build only. Test files (`tests/`) can only use `@main/*` and `@preload/*` (configured in `vitest.config.ts`).
 
 ### State Management (Renderer)
 

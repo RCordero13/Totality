@@ -67,7 +67,9 @@ export function registerGeminiHandlers() {
       return await getGeminiService().sendMessage(validated)
     } catch (error) {
       console.error('Error in ai:sendMessage:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -98,7 +100,9 @@ export function registerGeminiHandlers() {
       return result
     } catch (error) {
       console.error('Error in ai:streamMessage:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -204,7 +208,9 @@ export function registerGeminiHandlers() {
       return { text: result.text, requestId }
     } catch (error) {
       console.error('Error in ai:qualityReport:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -228,7 +234,9 @@ export function registerGeminiHandlers() {
       return { text: result.text, requestId }
     } catch (error) {
       console.error('Error in ai:upgradePriorities:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -252,7 +260,9 @@ export function registerGeminiHandlers() {
       return { text: result.text, requestId }
     } catch (error) {
       console.error('Error in ai:completenessInsights:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -276,7 +286,9 @@ export function registerGeminiHandlers() {
       return { text: result.text, requestId }
     } catch (error) {
       console.error('Error in ai:wishlistAdvice:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 
@@ -302,7 +314,9 @@ export function registerGeminiHandlers() {
       return { text: explanation }
     } catch (error) {
       console.error('Error in ai:explainQuality:', error)
-      throw formatError(error)
+      const formatted = formatError(error)
+      if (formatted.rateLimited) return formatted
+      throw formatted
     }
   })
 }

@@ -10,7 +10,7 @@ import { getErrorMessage } from './utils/errorUtils'
  */
 
 import * as dgram from 'dgram'
-import axios from 'axios'
+import { fetchWithTimeout } from './utils/httpClient'
 
 export interface DiscoveredEmbyServer {
   id: string
@@ -121,31 +121,36 @@ export class EmbyDiscoveryService {
     try {
 
       // Emby uses /emby prefix for API calls
-      const response = await axios.get(`${url.replace(/\/$/, '')}/emby/System/Info/Public`, {
-        timeout: 5000,
-        headers: { Accept: 'application/json' },
-      })
+      const response = await fetchWithTimeout(
+        `${url.replace(/\/$/, '')}/emby/System/Info/Public`,
+        { headers: { Accept: 'application/json' } },
+        5000
+      )
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json() as { ServerName: string; Id: string; Version: string }
 
       return {
         success: true,
-        serverName: response.data.ServerName,
-        serverId: response.data.Id,
-        version: response.data.Version,
+        serverName: data.ServerName,
+        serverId: data.Id,
+        version: data.Version,
       }
     } catch (error: unknown) {
       // Fallback: try without /emby prefix (some Emby setups)
       try {
-  
-        const response = await axios.get(`${url.replace(/\/$/, '')}/System/Info/Public`, {
-          timeout: 5000,
-          headers: { Accept: 'application/json' },
-        })
+        const response = await fetchWithTimeout(
+          `${url.replace(/\/$/, '')}/System/Info/Public`,
+          { headers: { Accept: 'application/json' } },
+          5000
+        )
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await response.json() as { ServerName: string; Id: string; Version: string }
 
         return {
           success: true,
-          serverName: response.data.ServerName,
-          serverId: response.data.Id,
-          version: response.data.Version,
+          serverName: data.ServerName,
+          serverId: data.Id,
+          version: data.Version,
         }
       } catch {
         return {

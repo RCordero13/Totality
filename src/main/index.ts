@@ -2,8 +2,12 @@ import { app, BrowserWindow, ipcMain, protocol, net, dialog, Tray, Menu, nativeI
 import path from 'node:path'
 import * as fs from 'fs'
 
-// Disable Chromium SUID sandbox on Linux — the AppImage can't set root ownership
-// on chrome-sandbox. Electron's contextIsolation still provides process security.
+
+// Disable Chromium SUID sandbox on Linux. AppImage packages cannot set root
+// ownership on the chrome-sandbox binary, so the SUID sandbox is unavailable in
+// that distribution format. Electron's contextIsolation + nodeIntegration:false
+// still provide strong process-level security for the renderer.
+// To restore full OS-level sandboxing on Linux, distribute as .deb or Snap instead.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox')
 }
@@ -141,6 +145,7 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true, // Electron 20+ default; overridden on Linux by --no-sandbox above
       spellcheck: false,
       enableWebSQL: false,
     },
@@ -297,7 +302,14 @@ app.whenReady().then(async () => {
     const userDataPath = app.getPath('userData')
     const artworkBasePath = path.join(userDataPath, 'artwork')
 
-    protocol.handle('local-artwork', (request) => {
+    // Resolve the artwork base path once at startup to avoid repeated sync realpathSync
+    // on every image request. Falls back to the raw path if it doesn't exist yet.
+    let realArtworkBasePath = artworkBasePath
+    try {
+      realArtworkBasePath = fs.realpathSync(artworkBasePath)
+    } catch { /* artwork dir may not exist until first scan */ }
+
+    protocol.handle('local-artwork', async (request) => {
       const url = new URL(request.url)
 
       // Check if this is a direct file path request
@@ -314,7 +326,8 @@ app.whenReady().then(async () => {
           return new Response('Forbidden', { status: 403 })
         }
 
-        if (filePath && fs.existsSync(filePath)) {
+        const fileExists = await fs.promises.access(filePath).then(() => true).catch(() => false)
+        if (fileExists) {
           // Handle Windows UNC paths
           if (filePath.startsWith('\\\\')) {
             return net.fetch(`file:${filePath.replace(/\\/g, '/')}`)
@@ -344,30 +357,26 @@ app.whenReady().then(async () => {
       const filePath = path.resolve(artworkBasePath, normalizedPath)
 
       // Ensure resolved path is within the artwork directory
-      // Use realpathSync to resolve symlinks before comparison
+      // Use async realpath to resolve symlinks before comparison
       let realFilePath: string
       try {
-        realFilePath = fs.existsSync(filePath) ? fs.realpathSync(filePath) : filePath
+        realFilePath = await fs.promises.realpath(filePath)
       } catch {
+        // File doesn't exist or can't be resolved — treat as not-found or traversal attempt
+        const fileExists = await fs.promises.access(filePath).then(() => true).catch(() => false)
+        if (!fileExists) return new Response('Not found', { status: 404 })
         return new Response('Forbidden', { status: 403 })
       }
-      const realBasePath = fs.existsSync(artworkBasePath) ? fs.realpathSync(artworkBasePath) : artworkBasePath
-      if (!realFilePath.startsWith(realBasePath + path.sep) && realFilePath !== realBasePath) {
+      if (!realFilePath.startsWith(realArtworkBasePath + path.sep) && realFilePath !== realArtworkBasePath) {
         console.warn('[Security] Blocked path escape attempt:', urlPath)
         return new Response('Forbidden', { status: 403 })
       }
 
-      // Check if file exists
-      if (fs.existsSync(filePath)) {
-        // Handle Windows paths for file:// URL
-        if (process.platform === 'win32') {
-          return net.fetch(`file:///${filePath.replace(/\\/g, '/')}`)
-        }
-        return net.fetch(`file://${filePath}`)
+      // Serve the file
+      if (process.platform === 'win32') {
+        return net.fetch(`file:///${filePath.replace(/\\/g, '/')}`)
       }
-
-      // Return a 404-like response
-      return new Response('Not found', { status: 404 })
+      return net.fetch(`file://${filePath}`)
     })
     console.log('Local artwork protocol registered')
 

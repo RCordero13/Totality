@@ -6,7 +6,7 @@ import { getErrorMessage } from '../../services/utils/errorUtils'
  * Handles authentication, server discovery, library operations, and scanning.
  */
 
-import axios, { AxiosInstance } from 'axios'
+import { fetchJSON, fetchWithTimeout, buildUrl } from '../../services/utils/httpClient'
 import { getDatabase } from '../../database/getDatabase'
 import { getQualityAnalyzer } from '../../services/QualityAnalyzer'
 import {
@@ -51,7 +51,6 @@ import type {
 import type { MediaItem, MediaItemVersion, AudioTrack, SubtitleTrack, MusicArtist, MusicAlbum, MusicTrack } from '../../types/database'
 
 const PLEX_API_URL = 'https://plex.tv/api/v2'
-const PLEX_TV_URL = 'https://plex.tv'
 const CLIENT_IDENTIFIER = 'totality'
 const PRODUCT_NAME = 'Totality'
 
@@ -87,7 +86,14 @@ export class PlexProvider implements MediaProvider {
 
   private authToken: string | null = null
   private selectedServer: PlexServer | null = null
-  private api: AxiosInstance
+
+  private readonly defaultHeaders: Record<string, string> = {
+    'X-Plex-Client-Identifier': CLIENT_IDENTIFIER,
+    'X-Plex-Product': PRODUCT_NAME,
+    'X-Plex-Version': '1.0.0',
+    'X-Plex-Platform': 'Windows',
+    Accept: 'application/json',
+  }
 
   // Cancellation support
   private scanCancelled = false
@@ -98,17 +104,6 @@ export class PlexProvider implements MediaProvider {
 
   constructor(config: SourceConfig) {
     this.sourceId = config.sourceId || this.generateSourceId()
-
-    this.api = axios.create({
-      timeout: 30000, // 30s default — prevents hanging on network issues
-      headers: {
-        'X-Plex-Client-Identifier': CLIENT_IDENTIFIER,
-        'X-Plex-Product': PRODUCT_NAME,
-        'X-Plex-Version': '1.0.0',
-        'X-Plex-Platform': 'Windows',
-        Accept: 'application/json',
-      },
-    })
 
     // Load token from connection config if provided
     if (config.connectionConfig?.token) {
@@ -129,10 +124,11 @@ export class PlexProvider implements MediaProvider {
    */
   async requestAuthPin(): Promise<PlexAuthPin> {
     try {
-      const response = await this.api.post(`${PLEX_API_URL}/pins`, {
-        strong: true,
+      return fetchJSON<PlexAuthPin>(buildUrl(`${PLEX_API_URL}/pins`, { strong: true }), {
+        method: 'POST',
+        headers: this.defaultHeaders,
+        timeoutMs: 30_000,
       })
-      return response.data as PlexAuthPin
     } catch (error) {
       console.error('Failed to request auth PIN:', error)
       throw new Error('Failed to initiate Plex authentication')
@@ -151,8 +147,9 @@ export class PlexProvider implements MediaProvider {
    */
   async checkAuthPin(pinId: number): Promise<string | null> {
     try {
-      const response = await this.api.get(`${PLEX_API_URL}/pins/${pinId}`)
-      const pin = response.data as PlexAuthPin
+      const pin = await fetchJSON<PlexAuthPin>(`${PLEX_API_URL}/pins/${pinId}`, {
+        headers: this.defaultHeaders, timeoutMs: 30_000,
+      })
 
       if (pin.authToken) {
         this.authToken = pin.authToken
@@ -170,18 +167,17 @@ export class PlexProvider implements MediaProvider {
     try {
       if (credentials.token) {
         // Verify the token works
-        const response = await this.api.get(`${PLEX_TV_URL}/users/account`, {
-          headers: {
-            'X-Plex-Token': credentials.token,
-          },
-        })
+        const userData = await fetchJSON<{ username?: string; title?: string }>(
+          `${PLEX_API_URL}/user`,
+          { headers: { ...this.defaultHeaders, 'X-Plex-Token': credentials.token }, timeoutMs: 30_000 }
+        )
 
-        if (response.data) {
+        if (userData) {
           this.authToken = credentials.token
           return {
             success: true,
             token: credentials.token,
-            userName: response.data.username || response.data.title,
+            userName: userData.username || userData.title,
           }
         }
       }
@@ -218,17 +214,12 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(`${PLEX_API_URL}/resources`, {
-        headers: {
-          'X-Plex-Token': this.authToken,
-        },
-        params: {
-          includeHttps: 1,
-          includeRelay: 1,
-        },
-      })
+      const resourceList = await fetchJSON<PlexResource[]>(
+        buildUrl(`${PLEX_API_URL}/resources`, { includeHttps: 1, includeRelay: 1 }),
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.authToken }, timeoutMs: 30_000 }
+      )
 
-      const resources: PlexResource[] = Array.isArray(response.data) ? response.data : []
+      const resources: PlexResource[] = Array.isArray(resourceList) ? resourceList : []
       const servers = resources.filter((r) => r.provides === 'server')
 
       return servers.map((server) => {
@@ -258,17 +249,12 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(`${PLEX_API_URL}/resources`, {
-        headers: {
-          'X-Plex-Token': this.authToken,
-        },
-        params: {
-          includeHttps: 1,
-          includeRelay: 1,
-        },
-      })
+      const resourceList2 = await fetchJSON<PlexResource[]>(
+        buildUrl(`${PLEX_API_URL}/resources`, { includeHttps: 1, includeRelay: 1 }),
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.authToken }, timeoutMs: 30_000 }
+      )
 
-      const resources: PlexResource[] = Array.isArray(response.data) ? response.data : []
+      const resources: PlexResource[] = Array.isArray(resourceList2) ? resourceList2 : []
       const server = resources.find(
         (r) => r.provides === 'server' && r.clientIdentifier === serverId
       )
@@ -289,10 +275,11 @@ export class PlexProvider implements MediaProvider {
       let workingConnection = sorted[0]
       for (const conn of sorted) {
         try {
-          await this.api.get(`${conn.uri}/identity`, {
-            headers: { 'X-Plex-Token': server.accessToken || '' },
-            timeout: 5000,
-          })
+          await fetchWithTimeout(
+            `${conn.uri}/identity`,
+            { headers: { ...this.defaultHeaders, 'X-Plex-Token': server.accessToken || '' } },
+            5000
+          )
           workingConnection = conn
           console.log(`[PlexProvider] Connected via ${conn.local ? 'local' : conn.relay ? 'relay' : 'remote'} (${conn.protocol})`)
           break
@@ -344,18 +331,16 @@ export class PlexProvider implements MediaProvider {
 
     try {
       const startTime = Date.now()
-      const response = await this.api.get(`${this.selectedServer.uri}/identity`, {
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-        },
-        timeout: 10000,
-      })
+      const identityData = await fetchJSON<{ MediaContainer?: { friendlyName?: string; version?: string } }>(
+        `${this.selectedServer.uri}/identity`,
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 10_000 }
+      )
       const latencyMs = Date.now() - startTime
 
       return {
         success: true,
-        serverName: response.data?.MediaContainer?.friendlyName || this.selectedServer.name,
-        serverVersion: response.data?.MediaContainer?.version || this.selectedServer.version,
+        serverName: identityData?.MediaContainer?.friendlyName || this.selectedServer.name,
+        serverVersion: identityData?.MediaContainer?.version || this.selectedServer.version,
         latencyMs,
       }
     } catch (error: unknown) {
@@ -376,14 +361,11 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(`${this.selectedServer.uri}/library/sections`, {
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-        },
-      })
-
-      const responseData = response.data as { MediaContainer?: { Directory?: PlexLibrary[] } }
-      const directories = responseData?.MediaContainer?.Directory || []
+      const sectionsData = await fetchJSON<{ MediaContainer?: { Directory?: PlexLibrary[] } }>(
+        `${this.selectedServer.uri}/library/sections`,
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 30_000 }
+      )
+      const directories = sectionsData?.MediaContainer?.Directory || []
       return directories.map((dir: PlexLibrary) => ({
         id: dir.key,
         name: dir.title,
@@ -418,17 +400,11 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
+      const itemData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMediaItem[] } }>(
         `${this.selectedServer.uri}/library/metadata/${itemId}`,
-        {
-          headers: {
-            'X-Plex-Token': this.selectedServer.accessToken,
-          },
-        }
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 30_000 }
       )
-
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMediaItem[] } }
-      const metadata = responseData?.MediaContainer?.Metadata?.[0]
+      const metadata = itemData?.MediaContainer?.Metadata?.[0]
       if (!metadata) {
         throw new Error('Item not found')
       }
@@ -748,14 +724,11 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(`${this.selectedServer.uri}/library/sections`, {
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-        },
-      })
-
-      const responseData = response.data as { MediaContainer?: { Directory?: PlexMediaItem[] } }
-      const directories = responseData?.MediaContainer?.Directory || []
+      const sectionsResult = await fetchJSON<{ MediaContainer?: { Directory?: PlexMediaItem[] } }>(
+        `${this.selectedServer.uri}/library/sections`,
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 30_000 }
+      )
+      const directories = sectionsResult?.MediaContainer?.Directory || []
       const library = directories.find((dir: PlexMediaItem) => dir.key === libraryKey)
 
       if (library) {
@@ -879,16 +852,20 @@ export class PlexProvider implements MediaProvider {
     let hasMore = true
 
     while (hasMore) {
-      const response = await this.api.get(url, {
-        params,
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-          'X-Plex-Container-Start': String(offset),
-          'X-Plex-Container-Size': String(batchSize),
-        },
-      })
+      const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: T[]; totalSize?: number; size?: number } }>(
+        buildUrl(url, params as Record<string, string | number | boolean | null | undefined>),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'X-Plex-Token': this.selectedServer.accessToken,
+            'X-Plex-Container-Start': String(offset),
+            'X-Plex-Container-Size': String(batchSize),
+          },
+          timeoutMs: 30_000,
+        }
+      )
 
-      const container = (response.data as { MediaContainer?: { Metadata?: T[]; totalSize?: number; size?: number } })?.MediaContainer
+      const container = responseData?.MediaContainer
       const items = container?.Metadata || []
       allItems.push(...items)
 
@@ -929,17 +906,11 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
+      const itemResult = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMediaItem[] } }>(
         `${this.selectedServer.uri}/library/metadata/${ratingKey}`,
-        {
-          headers: {
-            'X-Plex-Token': this.selectedServer.accessToken,
-          },
-        }
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 30_000 }
       )
-
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMediaItem[] } }
-      return responseData?.MediaContainer?.Metadata?.[0] || null
+      return itemResult?.MediaContainer?.Metadata?.[0] || null
     } catch (error) {
       console.error('Failed to get item metadata:', error)
       return null
@@ -966,17 +937,11 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
+      const seasonResult = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMediaItem[] } }>(
         `${this.selectedServer.uri}/library/metadata/${seasonKey}`,
-        {
-          headers: {
-            'X-Plex-Token': this.selectedServer.accessToken,
-          },
-        }
+        { headers: { ...this.defaultHeaders, 'X-Plex-Token': this.selectedServer.accessToken }, timeoutMs: 30_000 }
       )
-
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMediaItem[] } }
-      return responseData?.MediaContainer?.Metadata?.[0] || null
+      return seasonResult?.MediaContainer?.Metadata?.[0] || null
     } catch (error) {
       return null
     }
@@ -992,13 +957,9 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(`${PLEX_TV_URL}/users/account`, {
-        headers: {
-          'X-Plex-Token': this.authToken,
-        },
+      return await fetchJSON<PlexUser>(`${PLEX_API_URL}/user`, {
+        headers: { 'X-Plex-Token': this.authToken },
       })
-
-      return response.data as PlexUser
     } catch (error) {
       console.error('Failed to get user info:', error)
       return null
@@ -1357,13 +1318,12 @@ export class PlexProvider implements MediaProvider {
     if (artistKey) {
       // Get albums for specific artist using /children endpoint (small dataset, no pagination needed)
       const url = `${this.selectedServer.uri}/library/metadata/${artistKey}/children`
-      const response = await this.api.get(url, {
+      const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMusicAlbum[] } }>(url, {
         headers: {
           'X-Plex-Token': this.selectedServer.accessToken,
           Accept: 'application/json',
         },
       })
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMusicAlbum[] } }
       albums = responseData?.MediaContainer?.Metadata || []
     } else {
       // Get all albums in library — paginated
@@ -1392,18 +1352,19 @@ export class PlexProvider implements MediaProvider {
     if (!this.selectedServer) return 0
 
     const url = `${this.selectedServer.uri}/library/sections/${libraryId}/all`
-    const response = await this.api.get(url, {
-      params: { type: 10 }, // type 10 = tracks
-      headers: {
-        'X-Plex-Token': this.selectedServer.accessToken,
-        'X-Plex-Container-Start': '0',
-        'X-Plex-Container-Size': '0',
-        Accept: 'application/json',
-      },
-    })
+    const responseData = await fetchJSON<{ MediaContainer?: { totalSize?: number } }>(
+      buildUrl(url, { type: 10 }),
+      {
+        headers: {
+          'X-Plex-Token': this.selectedServer.accessToken,
+          'X-Plex-Container-Start': '0',
+          'X-Plex-Container-Size': '0',
+          Accept: 'application/json',
+        },
+      }
+    )
 
-    const container = (response.data as { MediaContainer?: { totalSize?: number } })?.MediaContainer
-    return container?.totalSize || 0
+    return responseData?.MediaContainer?.totalSize || 0
   }
 
   async getMusicTracks(albumKey: string): Promise<PlexMusicTrack[]> {
@@ -1416,20 +1377,16 @@ export class PlexProvider implements MediaProvider {
     // Request tracks with Media information included
     // Using includeFields to ensure we get all track data
     // Fetch tracks with includeMeta to get Mood and other tag data
-    const response = await this.api.get(
-      `${this.selectedServer.uri}/library/metadata/${albumKey}/children`,
+    const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMusicTrack[] } }>(
+      buildUrl(`${this.selectedServer.uri}/library/metadata/${albumKey}/children`, { includeMeta: 1 }),
       {
         headers: {
           'X-Plex-Token': this.selectedServer.accessToken,
           Accept: 'application/json',
         },
-        params: {
-          includeMeta: 1,
-        },
       }
     )
 
-    const responseData = response.data as { MediaContainer?: { Metadata?: PlexMusicTrack[] } }
     const tracks = responseData?.MediaContainer?.Metadata || []
     console.log(`[PlexProvider] Found ${tracks.length} tracks`)
 
@@ -1446,7 +1403,7 @@ export class PlexProvider implements MediaProvider {
         const detailedTracks: PlexMusicTrack[] = []
         for (const track of tracks) {
           try {
-            const detailResponse = await this.api.get(
+            const detailData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMusicTrack[] } }>(
               `${this.selectedServer.uri}/library/metadata/${track.ratingKey}`,
               {
                 headers: {
@@ -1455,7 +1412,6 @@ export class PlexProvider implements MediaProvider {
                 },
               }
             )
-            const detailData = detailResponse.data as { MediaContainer?: { Metadata?: PlexMusicTrack[] } }
             const detailedTrack = detailData?.MediaContainer?.Metadata?.[0]
             if (detailedTrack) {
               detailedTracks.push(detailedTrack)
@@ -1482,16 +1438,10 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
+      const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMusicArtist[] } }>(
         `${this.selectedServer.uri}/library/metadata/${artistKey}`,
-        {
-          headers: {
-            'X-Plex-Token': this.selectedServer.accessToken,
-          },
-        }
+        { headers: { 'X-Plex-Token': this.selectedServer.accessToken } }
       )
-
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMusicArtist[] } }
       return responseData?.MediaContainer?.Metadata?.[0] || null
     } catch (error) {
       console.error('Failed to get artist metadata:', error)
@@ -1508,16 +1458,10 @@ export class PlexProvider implements MediaProvider {
     }
 
     try {
-      const response = await this.api.get(
+      const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: PlexMusicAlbum[] } }>(
         `${this.selectedServer.uri}/library/metadata/${albumKey}`,
-        {
-          headers: {
-            'X-Plex-Token': this.selectedServer.accessToken,
-          },
-        }
+        { headers: { 'X-Plex-Token': this.selectedServer.accessToken } }
       )
-
-      const responseData = response.data as { MediaContainer?: { Metadata?: PlexMusicAlbum[] } }
       return responseData?.MediaContainer?.Metadata?.[0] || null
     } catch (error) {
       console.error('Failed to get album metadata:', error)
@@ -1683,17 +1627,12 @@ export class PlexProvider implements MediaProvider {
   async getTrackMoods(ratingKey: string): Promise<string[]> {
     if (!this.selectedServer) throw new Error('No Plex server selected')
 
-    const response = await this.api.get(
+    const responseData = await fetchJSON<{ MediaContainer?: { Metadata?: Array<{ Mood?: Array<{ tag: string }> }> } }>(
       `${this.selectedServer.uri}/library/metadata/${ratingKey}`,
-      {
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-          Accept: 'application/json',
-        },
-      }
+      { headers: { 'X-Plex-Token': this.selectedServer.accessToken, Accept: 'application/json' } }
     )
-    const item = response.data?.MediaContainer?.Metadata?.[0]
-    return item?.Mood?.map((m: { tag: string }) => m.tag) || []
+    const item = responseData?.MediaContainer?.Metadata?.[0]
+    return item?.Mood?.map((m) => m.tag) || []
   }
 
   /**
@@ -1719,13 +1658,11 @@ export class PlexProvider implements MediaProvider {
       params.set(`${tagType}[${i}].tag.tag`, tag)
     })
 
-    await this.api.put(
+    await fetchWithTimeout(
       `${this.selectedServer.uri}/library/sections/${sectionId}/all?${params.toString()}`,
-      null,
       {
-        headers: {
-          'X-Plex-Token': this.selectedServer.accessToken,
-        },
+        method: 'PUT',
+        headers: { 'X-Plex-Token': this.selectedServer.accessToken },
       }
     )
     return true
@@ -1750,17 +1687,16 @@ export class PlexProvider implements MediaProvider {
     console.log(`[PlexProvider ${this.sourceId}] Fetching ${field} tags for library ${libraryId}...`)
 
     const tagsUrl = `${this.selectedServer.uri}/library/sections/${libraryId}/${tagEndpoint}`
-    const tagsResponse = await this.api.get(tagsUrl, {
+    const tagsResponse = await fetchJSON<{
+      MediaContainer?: { Directory?: Array<{ key: string; title: string; tag?: string }> }
+    }>(buildUrl(tagsUrl, { type: 10 }), {
       headers: {
         'X-Plex-Token': this.selectedServer.accessToken,
         Accept: 'application/json',
       },
-      params: { type: 10 },
     })
 
-    const tags = (tagsResponse.data as {
-      MediaContainer?: { Directory?: Array<{ key: string; title: string; tag?: string }> }
-    })?.MediaContainer?.Directory || []
+    const tags = tagsResponse?.MediaContainer?.Directory || []
 
     console.log(`[PlexProvider ${this.sourceId}] Found ${tags.length} ${field} tags in library`)
 

@@ -79,7 +79,9 @@ export class CredentialEncryptionService {
       return ENCRYPTED_PREFIX + encrypted.toString('base64')
     } catch (error) {
       console.error('[CredentialEncryption] Failed to encrypt value:', error)
-      return value
+      throw new Error(
+        `[CredentialEncryption] Encryption failed — refusing to store credential as plaintext: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
   }
 

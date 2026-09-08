@@ -15,7 +15,7 @@ import { retryWithBackoff } from './utils/retryWithBackoff'
  * - No rate limiting but be respectful
  */
 
-import axios, { AxiosInstance } from 'axios'
+import { fetchJSON, fetchWithTimeout, buildUrl } from './utils/httpClient'
 import { getDatabase } from '../database/getDatabase'
 import { getLoggingService } from './LoggingService'
 import { RateLimiters, SimpleDelayRateLimiter } from './utils/RateLimiter'
@@ -98,8 +98,6 @@ export interface MusicAnalysisOptions extends AnalysisOptions {
 }
 
 export class MusicBrainzService extends CancellableOperation {
-  private api: AxiosInstance
-
   // Rate limiting - MusicBrainz requires max 1 req/sec
   // We use 1.5 seconds to be safe and comply with guidelines
   private rateLimiter: SimpleDelayRateLimiter = RateLimiters.createMusicBrainzLimiter()
@@ -109,19 +107,18 @@ export class MusicBrainzService extends CancellableOperation {
   // User-Agent per MusicBrainz guidelines
   private readonly USER_AGENT = 'Totality/0.1.0 (https://github.com/totality-app/totality)'
 
+  private readonly MB_BASE_URL = 'https://musicbrainz.org/ws/2'
+
   // Cover Art Archive base URL
   private static readonly COVER_ART_BASE_URL = 'https://coverartarchive.org'
 
+  // Default headers sent with every MusicBrainz request
+  private get mbHeaders(): Record<string, string> {
+    return { 'User-Agent': this.USER_AGENT, 'Accept': 'application/json' }
+  }
+
   constructor() {
     super()
-    this.api = axios.create({
-      baseURL: 'https://musicbrainz.org/ws/2',
-      headers: {
-        'User-Agent': this.USER_AGENT,
-        'Accept': 'application/json',
-      },
-      timeout: 30000,
-    })
   }
 
   /**
@@ -142,24 +139,18 @@ export class MusicBrainzService extends CancellableOperation {
    */
   async getCoverArtUrl(releaseGroupId: string): Promise<string | null> {
     try {
-      // Try to get the cover art info from Cover Art Archive
-      const response = await axios.head(
+      const response = await fetchWithTimeout(
         `${MusicBrainzService.COVER_ART_BASE_URL}/release-group/${releaseGroupId}/front`,
-        {
-          timeout: 5000,
-          maxRedirects: 5,
-          validateStatus: (status) => status < 400 || status === 404,
-        }
+        { method: 'HEAD' },
+        5000
       )
 
-      if (response.status === 200 || response.status === 307 || response.status === 302) {
-        // Cover art exists - return the URL (with 500px size for reasonable quality)
+      if (response.ok || response.status === 307 || response.status === 302) {
         return this.buildCoverArtUrl(releaseGroupId, '500')
       }
 
       return null
-    } catch (error) {
-      // Cover art not available or request failed
+    } catch {
       return null
     }
   }
@@ -233,14 +224,11 @@ export class MusicBrainzService extends CancellableOperation {
    */
   async searchArtist(name: string): Promise<MBArtist[]> {
     return this.requestWithRetry(async () => {
-      const response = await this.api.get<MBArtistSearchResult>('/artist', {
-        params: {
-          query: `artist:${name}`,
-          fmt: 'json',
-          limit: 10,
-        },
-      })
-      return response.data.artists || []
+      const data = await fetchJSON<MBArtistSearchResult>(
+        buildUrl(`${this.MB_BASE_URL}/artist`, { query: `artist:${name}`, fmt: 'json', limit: 10 }),
+        { headers: this.mbHeaders, timeoutMs: 30_000 }
+      )
+      return data.artists || []
     }, `searchArtist(${name})`)
   }
 
@@ -250,14 +238,11 @@ export class MusicBrainzService extends CancellableOperation {
   private async hasDigitalRelease(releaseGroupId: string): Promise<boolean> {
     try {
       const releases = await this.requestWithRetry(async () => {
-        const response = await this.api.get<{ releases: MBRelease[] }>(`/release`, {
-          params: {
-            'release-group': releaseGroupId,
-            fmt: 'json',
-            limit: 50,
-          },
-        })
-        return response.data.releases || []
+        const data = await fetchJSON<{ releases: MBRelease[] }>(
+          buildUrl(`${this.MB_BASE_URL}/release`, { 'release-group': releaseGroupId, fmt: 'json', limit: 50 }),
+          { headers: this.mbHeaders, timeoutMs: 30_000 }
+        )
+        return data.releases || []
       }, `checkDigitalRelease(${releaseGroupId})`)
 
       // Check if any release has a digital/CD format
@@ -308,13 +293,10 @@ export class MusicBrainzService extends CancellableOperation {
   }> {
     // Get artist info with release groups in a single call for efficiency
     const artist = await this.requestWithRetry(async () => {
-      const response = await this.api.get<MBArtist>(`/artist/${musicbrainzId}`, {
-        params: {
-          fmt: 'json',
-          inc: 'release-groups',
-        },
-      })
-      return response.data
+      return fetchJSON<MBArtist>(
+        buildUrl(`${this.MB_BASE_URL}/artist/${musicbrainzId}`, { fmt: 'json', inc: 'release-groups' }),
+        { headers: this.mbHeaders, timeoutMs: 30_000 }
+      )
     }, `getArtist(${musicbrainzId})`)
 
     // Use release groups from artist response if available, otherwise fetch separately
@@ -323,17 +305,11 @@ export class MusicBrainzService extends CancellableOperation {
     if (releaseGroups.length === 0) {
       // Fallback: fetch release groups separately if not included
       releaseGroups = await this.requestWithRetry(async () => {
-        const response = await this.api.get<{ 'release-groups': MBReleaseGroup[] }>(
-          `/release-group`,
-          {
-            params: {
-              artist: musicbrainzId,
-              fmt: 'json',
-              limit: 100,
-            },
-          }
+        const data = await fetchJSON<{ 'release-groups': MBReleaseGroup[] }>(
+          buildUrl(`${this.MB_BASE_URL}/release-group`, { artist: musicbrainzId, fmt: 'json', limit: 100 }),
+          { headers: this.mbHeaders, timeoutMs: 30_000 }
         )
-        return response.data['release-groups'] || []
+        return data['release-groups'] || []
       }, `getReleaseGroups(${musicbrainzId})`)
     }
 
@@ -401,33 +377,35 @@ export class MusicBrainzService extends CancellableOperation {
     try {
       // Get releases with media and recordings in a single call (optimization)
       let releases = await this.requestWithRetry(async () => {
-        const response = await this.api.get(`/release`, {
-          params: {
+        interface MBReleasesResponse { releases?: MBRelease[] }
+        const data = await fetchJSON<MBReleasesResponse>(
+          buildUrl(`${this.MB_BASE_URL}/release`, {
             'release-group': releaseGroupId,
             fmt: 'json',
             limit: 5,
             status: 'official',
-            inc: 'media+recordings',  // Include tracks in the same request
-          },
-        })
-        interface MBReleasesResponse { releases?: MBRelease[] }
-        return (response.data as MBReleasesResponse)?.releases || []
+            inc: 'media+recordings',
+          }),
+          { headers: this.mbHeaders, timeoutMs: 30_000 }
+        )
+        return data?.releases || []
       }, `getReleases(${releaseGroupId})`)
 
       // If no official releases, try without status filter
       if (releases.length === 0) {
         console.log(`[MusicBrainzService] No official releases found, trying all releases...`)
         releases = await this.requestWithRetry(async () => {
-          const response = await this.api.get(`/release`, {
-            params: {
+          interface MBReleasesResponse { releases?: MBRelease[] }
+          const data = await fetchJSON<MBReleasesResponse>(
+            buildUrl(`${this.MB_BASE_URL}/release`, {
               'release-group': releaseGroupId,
               fmt: 'json',
               limit: 5,
-              inc: 'media+recordings',  // Include tracks in the same request
-            },
-          })
-          interface MBReleasesResponse { releases?: MBRelease[] }
-          return (response.data as MBReleasesResponse)?.releases || []
+              inc: 'media+recordings',
+            }),
+            { headers: this.mbHeaders, timeoutMs: 30_000 }
+          )
+          return data?.releases || []
         }, `getReleasesAll(${releaseGroupId})`)
       }
 
@@ -546,13 +524,6 @@ export class MusicBrainzService extends CancellableOperation {
       }
       const query = `release:"${cleanedTitle}" AND artist:"${artistName}"`
       const releaseGroups = await this.requestWithRetry(async () => {
-        const response = await this.api.get('/release-group', {
-          params: {
-            query,
-            fmt: 'json',
-            limit: 5,
-          },
-        })
         interface MBReleaseGroupsResponse { 'release-groups'?: Array<{
           id: string
           title: string
@@ -560,7 +531,11 @@ export class MusicBrainzService extends CancellableOperation {
           score?: number
           'artist-credit'?: Array<{ name?: string; artist?: { country?: string } }>
         }> }
-        return (response.data as MBReleaseGroupsResponse)?.['release-groups'] || []
+        const data = await fetchJSON<MBReleaseGroupsResponse>(
+          buildUrl(`${this.MB_BASE_URL}/release-group`, { query, fmt: 'json', limit: 5 }),
+          { headers: this.mbHeaders, timeoutMs: 30_000 }
+        )
+        return data?.['release-groups'] || []
       }, `searchRelease(${artistName} - ${albumTitle})`)
 
       return releaseGroups.map((rg) => ({
