@@ -9,7 +9,7 @@ import { getDatabase } from '../database/getDatabase'
  * API key is read from settings (encrypted at rest via CredentialEncryptionService).
  * Rate limits are tracked from 429 responses and surfaced to the renderer.
  *
- * Free tier limits (gemini-2.5-flash): 10 RPM, 250 RPD — no credit card required.
+ * The default model is Gemini 3.8 Flash. API quotas depend on the selected model and account.
  */
 
 export interface GeminiMessage {
@@ -49,8 +49,8 @@ export class RateLimitError extends Error {
 }
 
 export class GeminiService {
-  private static readonly DEFAULT_MODEL = 'gemini-2.5-flash'
-  private static readonly FAST_MODEL = 'gemini-2.5-flash'
+  private static readonly DEFAULT_MODEL = 'gemini-3.8-flash'
+  private static readonly FAST_MODEL = 'gemini-3.8-flash'
 
   private client: GoogleGenAI | null = null
   private apiKey: string | null = null

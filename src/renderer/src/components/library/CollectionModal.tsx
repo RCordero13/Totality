@@ -136,7 +136,7 @@ export const CollectionModal = memo(function CollectionModal({
         />
 
         {/* Modal */}
-        <div ref={modalRef} className="relative bg-card border border-border rounded-xl shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+        <div ref={modalRef} className="relative bg-card border border-border rounded-xl shadow-xl max-w-4xl w-full max-h-[calc(100vh-2rem)] min-h-0 overflow-hidden flex flex-col">
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-border/30 bg-sidebar-gradient rounded-t-xl shrink-0">
             <div>

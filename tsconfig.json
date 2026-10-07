@@ -9,6 +9,7 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "ignoreDeprecations": "5.0",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
@@ -23,7 +24,6 @@
     "removeComments": true,
 
     /* Path mapping */
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/renderer/src/*"],
       "@main/*": ["./src/main/*"],

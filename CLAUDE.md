@@ -55,7 +55,7 @@ npm run release:beta     # Pre-release beta bump (0.1.0 → 0.1.1-beta.0)
 
 ### Commit Message Format
 
-```
+```text
 type(scope): description
 
 feat: add new provider support        → minor bump
@@ -76,21 +76,25 @@ Reset database: `del "%APPDATA%\totality\totality.db"`
 ### Three-Process Model (Electron Standard)
 
 **1. Main Process** (`src/main/`)
+
 - Node.js environment with full system access
 - Window management, database operations (better-sqlite3/SQL.js), external API communication
 - Entry: `src/main/index.ts` → builds to `dist-electron/main/index.cjs`
 
 **2. Preload Script** (`src/preload/`)
+
 - Secure bridge between main and renderer via `contextBridge`
 - Exposes `window.electronAPI` with typed IPC methods
 - Entry: `src/preload/index.ts` → builds to `dist-electron/preload/index.cjs`
 
 **3. Renderer Process** (`src/renderer/`)
+
 - React 18 + TypeScript web application
 - Chromium environment, no Node.js access (security)
 - Entry: `src/renderer/src/main.tsx` → builds to `dist/`
 
 **Worker Threads:**
+
 - FFprobe worker (`src/main/workers/ffprobe-worker.ts`) — separate Vite entry point, builds to `dist-electron/main/ffprobe-worker.cjs`
 
 ### Core Services (Singletons in Main Process)
@@ -122,6 +126,7 @@ The application supports multiple media server providers through a common interf
 - **VersionNaming.ts**: Smart edition/version naming for multi-version movies (deduplication by TMDB/IMDB ID)
 
 **SourceManager** orchestrates all providers, handling:
+
 - Provider lifecycle (load, initialize, cleanup)
 - Aggregated scanning across multiple sources
 - Connection testing and server discovery
@@ -137,6 +142,7 @@ The application supports multiple media server providers through a common interf
 The LocalFolderProvider acts as a media organizer for local files, combining filename parsing, FFprobe analysis, and TMDB/MusicBrainz metadata lookup.
 
 **Filename Parsing** (`src/main/services/FileNameParser.ts`):
+
 - Smart year extraction: prefers `(2019)` format, handles multiple years (uses last), preserves numeric titles like "1917"
 - TV episode patterns: `S01E01`, `1x01`, season folders
 - Extracts: resolution, codec, source, edition, release group
@@ -145,22 +151,26 @@ The LocalFolderProvider acts as a media organizer for local files, combining fil
 Files matching common extras patterns (featurettes, trailers, behind the scenes, etc.) are automatically excluded, as are files < 45 minutes in movie libraries. See `EXTRAS_FILENAME_PATTERNS` and `EXTRAS_FOLDER_NAMES` constants in LocalFolderProvider.ts.
 
 **Metadata Priority** (for local files):
+
 1. Embedded file metadata (MKV/MP4 tags via FFprobe)
 2. TMDB/MusicBrainz API lookup
 3. Filename parsing (fallback)
 
 **TMDB Integration**:
+
 - Movies: Search with year, fallback without year if no match, prefer exact year match from results
 - TV Episodes: Cache series TMDB ID to avoid repeated searches, fetch episode titles
 - Collections: Trust movie's `belongs_to_collection` field from TMDB
 
 **Embedded Metadata Extraction** (via FFprobe `format.tags`):
+
 - Video: title, year, description, show name, season/episode numbers
 - Audio: artist, album, track, year (for music files)
 
 ### IPC Communication Pattern
 
 **Registration** (`src/main/index.ts` on `app.whenReady()`):
+
 ```typescript
 registerDatabaseHandlers()
 registerQualityHandlers()
@@ -180,6 +190,7 @@ registerMoodHandlers()
 ```
 
 **Handler Pattern** (`src/main/ipc/*.ts`):
+
 ```typescript
 ipcMain.handle('namespace:method', async (_event, ...args) => {
   const service = getService()
@@ -188,17 +199,20 @@ ipcMain.handle('namespace:method', async (_event, ...args) => {
 ```
 
 **IPC Utilities** (`src/main/ipc/utils/`): Prefer these helpers for new handlers:
+
 - `createIpcHandler(channel, handler)` / `createIpcHandlerWithEvent(channel, handler)` — type-safe wrappers with consistent error logging
 - `safeSend(win, channel, ...args)` — safely sends to a BrowserWindow that may have been destroyed
 - `createProgressUpdater(win, progressChannel, updateType)` — returns `{ onProgress, flush }` that throttles progress events (250ms) and `library:updated` events (2s); call `flush()` when the operation completes
 - `createThrottledUpdater(win, updateType)` — simpler variant when you only need `library:updated` throttling, no progress channel
 
 **Renderer Usage**:
+
 ```typescript
 const result = await window.electronAPI.namespaceMethod(args)
 ```
 
 **Progress Events** (main → renderer):
+
 ```typescript
 // Main: win.webContents.send('event:name', data)
 // Renderer: window.electronAPI.onEventName(callback)
@@ -213,6 +227,7 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 ### Database Schema
 
 **Core Tables** (see `src/main/database/schema.ts`):
+
 - `media_sources`: Provider configurations (type, credentials, enabled status)
 - `media_items`: Media with video/audio specs (source_id, resolution, codecs, bitrates, summary)
 - `quality_scores`: Tier-based scores (quality_tier: SD/720p/1080p/4K, tier_quality: LOW/MEDIUM/HIGH)
@@ -237,6 +252,7 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 ### Quality Analysis System
 
 **Video Quality Scoring** (`src/main/services/QualityAnalyzer.ts`):
+
 1. Resolution tier: SD (<720p), 720p, 1080p, 4K (≥2160p)
 2. Per-tier scoring: bitrate vs configurable medium/high thresholds → 0-100 score
 3. At or above high threshold = 100 (no penalty curve beyond target)
@@ -247,6 +263,7 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 8. Corrupt audio track detection: tracks with bitrate < channels × 32 kbps are skipped in best-track selection
 
 **Music Quality Tiers**:
+
 - **Ultra**: Lossless (FLAC/ALAC/WAV) with 24-bit+ OR >48kHz sample rate
 - **High**: CD-quality lossless (16-bit / 44.1-48kHz)
 - **High Lossy**: Lossy ≥256 kbps (recognized as high quality for its format)
@@ -266,6 +283,7 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 ### State Management (Renderer)
 
 **React Contexts** (`src/renderer/src/contexts/`):
+
 - **SourceContext**: Source CRUD, scan progress, provider authentication flows
 - **WishlistContext**: Wishlist state management
 - **ToastContext**: Toast notification display
@@ -274,6 +292,7 @@ Events: `sources:scanProgress`, `quality:analysisProgress`, `series:progress`, `
 - **ThemeContext**: Theme selection and persistence (`effectiveIsDark` for light/dark detection). 14 base themes (dark, slate, ember, midnight, oled, velvet, emerald, cobalt, carbon, matrix, fury, gotham, neon, whimsy) with dark/light/system modes. Film-inspired themes (matrix, fury, gotham, neon, whimsy) added in v0.3.1. Theme CSS vars in `src/renderer/src/styles/index.css`, selector UI in `AppearanceTab.tsx`.
 
 **Key Renderer Libraries**:
+
 - **react-window** + **react-virtualized-auto-sizer**: Virtualized lists/grids for large media libraries
 - **lucide-react**: Icon library used throughout the UI
 - **@dnd-kit**: Drag-and-drop for task queue reordering
@@ -341,6 +360,7 @@ After any scan (manual rescan or live monitoring) that adds, updates, or removes
 ### Preference Persistence
 
 Preferences persisted via `setSetting`/`getSetting`:
+
 - `dashboard_upgrade_sort`, `dashboard_collection_sort`, `dashboard_series_sort`, `dashboard_artist_sort`
 - `library_view_prefs` — JSON object storing per-tab `viewType` and `gridScale`
 - `quality_video_weight` — video/audio score weighting (default 70%)
@@ -356,15 +376,17 @@ Preferences persisted via `setSetting`/`getSetting`:
 
 ### AI Chat & Analysis (Gemini)
 
-**Model:** Google Gemini `gemini-2.5-flash` via `@google/genai` SDK (free tier: 10 RPM, 250 RPD)
+**Model:** Google Gemini `gemini-3.8-flash` by default via `@google/genai` SDK. Gemini 2.5 remains available as a legacy selection in Services settings.
 
 **Architecture:**
+
 - **GeminiService** (`src/main/services/GeminiService.ts`): Sync constructor reads API key from DB (async causes race condition). `sendMessageWithTools()` runs agentic tool-use loop (max 10 rounds).
 - **GeminiTools** (`src/main/services/GeminiTools.ts`): 21 tool definitions + `executeTool()` dispatcher for library queries, TMDB search, wishlist management.
 - **GeminiAnalysisService** (`src/main/services/GeminiAnalysisService.ts`): 4 streaming report generators. Gathers data upfront (not agentic).
 - **System Prompts** (`src/main/services/ai-system-prompts.ts`): Chat prompt has film/TV/music enthusiast personality.
 
 **Critical Gotchas:**
+
 - `.text` and `.functionCalls` are **getter properties**, NOT methods — don't use `()`
 - Rate limit errors must be **returned** (not thrown) from IPC handlers — thrown errors lose custom properties during Electron IPC serialization
 - Rate limit detection: checks both HTTP 429 and `RESOURCE_EXHAUSTED`. SDK auto-retries 429s up to 2 times before throwing.
@@ -386,6 +408,7 @@ Preferences persisted via `setSetting`/`getSetting`:
 ### Service Initialization Lifecycle
 
 Initialization order in `src/main/index.ts` on `app.whenReady()`:
+
 1. Logging (to capture startup logs)
 2. Custom protocol registration (`local-artwork://`)
 3. Database initialization (via `DatabaseFactory` — selects backend, runs migrations)
@@ -412,6 +435,7 @@ The app registers `uncaughtException` and `unhandledRejection` handlers that cal
 ### Database Batch Mode
 
 For bulk operations, use batch mode to defer disk writes:
+
 ```typescript
 const db = getDatabaseService()
 db.startBatch()
@@ -456,6 +480,7 @@ export function getService(): ServiceClass {
 **Location:** `src/main/database/DatabaseFactory.ts`
 
 The app supports two SQLite backends with automatic migration:
+
 - **better-sqlite3** (`BetterSQLiteService`): Native SQLite with WAL mode, used in production for performance. Writes are synchronous and durable by default.
 - **SQL.js** (`DatabaseService`): WASM-based in-memory SQLite. Used as fallback and in tests (`USE_SQLJS=true` env var forces this).
 
@@ -472,6 +497,7 @@ The app supports two SQLite backends with automatic migration:
 ### Database Persistence (SQL.js only)
 
 When using SQL.js backend, the database is in-memory. `DatabaseService.save()` writes to disk:
+
 - After each write operation (unless in batch mode)
 - On `app.before-quit`
 
@@ -483,15 +509,19 @@ better-sqlite3 writes directly to disk (no explicit save needed).
 
 1. Add method to service (`src/main/services/ServiceName.ts`)
 2. Register handler (`src/main/ipc/servicename.ts`):
+
    ```typescript
    ipcMain.handle('service:methodName', async (_event, args) => {
      return await getService().methodName(args)
    })
    ```
+
 3. Expose in preload (`src/preload/index.ts`):
+
    ```typescript
    serviceMethodName: (args) => ipcRenderer.invoke('service:methodName', args)
    ```
+
 4. Add TypeScript type to `ElectronAPI` interface in `src/preload/index.ts`
 
 ### Adding a Database Table
@@ -518,6 +548,7 @@ better-sqlite3 writes directly to disk (no explicit save needed).
 Components in `src/renderer/src/components/` organized by domain: `dashboard/`, `library/`, `sources/`, `settings/`, `ui/`, `onboarding/`, `wishlist/`.
 
 **Library view structure** (`src/renderer/src/components/library/`):
+
 - `MediaBrowser.tsx`: Main container — manages state, data loading, tab switching, and the completeness panel
 - `MoviesView.tsx`: Movie/collection grid and list views (extracted view component)
 - `TVShowsView.tsx`: TV show/season/episode views (extracted view component)
@@ -541,6 +572,7 @@ Components in `src/renderer/src/components/` organized by domain: `dashboard/`, 
 ### Credential Encryption
 
 Sensitive credentials are encrypted at rest using Electron's `safeStorage` API, which leverages OS-level encryption:
+
 - **Windows**: DPAPI (Data Protection API)
 - **macOS**: Keychain
 - **Linux**: libsecret
@@ -548,12 +580,15 @@ Sensitive credentials are encrypted at rest using Electron's `safeStorage` API, 
 **Location:** `src/main/services/CredentialEncryptionService.ts`
 
 **Encrypted fields in `connection_config`:**
+
 - `token`, `accessToken`, `apiKey`, `password`, `secret`
 
 **Encrypted settings:**
+
 - `plex_token`, `tmdb_api_key`, `musicbrainz_api_token`, `gemini_api_key`
 
 **How it works:**
+
 1. On database initialization, existing plain-text credentials are automatically migrated to encrypted format
 2. `DatabaseService` transparently encrypts credentials when saving and decrypts when reading
 3. Encrypted values are prefixed with `ENC:` followed by base64-encoded ciphertext
@@ -564,6 +599,7 @@ Sensitive credentials are encrypted at rest using Electron's `safeStorage` API, 
 ### Electron Security Settings
 
 The application follows Electron security best practices:
+
 - `contextIsolation: true` - Renderer isolated from Node.js
 - `nodeIntegration: false` - No direct Node.js access in renderer
 - Preload script uses `contextBridge` to expose only specific IPC methods
@@ -571,23 +607,28 @@ The application follows Electron security best practices:
 ## Troubleshooting
 
 ### Build Errors
+
 - Vite fails on Node modules: Check `external` list in `vite.config.ts`
 - Missing types: Ensure `@types/*` installed, check `tsconfig.json` paths
 
 ### Database Issues
+
 - Schema errors: Check `runMigrations()` in `DatabaseService.ts`
 - Data not persisting: Verify `save()` called after writes
 - Corruption: Delete database file and restart
 - **NOT NULL constraint failed**: Check if upsert code uses `|| null` for columns defined as `NOT NULL DEFAULT ''` — use `|| ''` instead
 
 ### Source Deletion
+
 When a source is deleted via `SourceManager.removeSource()` → `db.deleteMediaSource()`, both backends clean up all associated data. **Important**: Wishlist cleanup runs BEFORE `deleteMediaItemsForSource()` since the subquery needs `media_items` to still exist. Tables cleaned: `wishlist_items`, `media_items`, `quality_scores`, `media_item_versions`, `media_item_collections`, `series_completeness`, `movie_collections`, `library_scans`, `media_sources`, `music_artists`, `music_albums`, `music_tracks`, `music_quality_scores`, `artist_completeness`, `album_completeness`, `notifications`.
 
 ### IPC Errors
+
 - "Method not found": Check handler registered in `registerXxxHandlers()`
 - Type mismatches: Verify `preload/index.ts` types match handler signatures
 
 ### Local Folder Scanning Issues
+
 - **Wrong year extracted**: FileNameParser prefers year in parentheses `(2019)`, then last bare year
 - **Extras not filtered**: Check `EXTRAS_FILENAME_PATTERNS` in LocalFolderProvider.ts
 - **TMDB not matching**: Verify TMDB API key in settings, check parsed title in logs

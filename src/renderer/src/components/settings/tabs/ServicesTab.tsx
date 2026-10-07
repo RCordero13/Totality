@@ -166,8 +166,8 @@ export function ServicesTab() {
   const [geminiStatus, setGeminiStatus] = useState<'idle' | 'testing' | 'valid' | 'invalid'>('idle')
   const [geminiError, setGeminiError] = useState<string | null>(null)
   const [originalGemini, setOriginalGemini] = useState('')
-  const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash')
-  const [originalGeminiModel, setOriginalGeminiModel] = useState('gemini-2.5-flash')
+  const [geminiModel, setGeminiModel] = useState('gemini-3.8-flash')
+  const [originalGeminiModel, setOriginalGeminiModel] = useState('gemini-3.8-flash')
   const [aiEnabled, setAiEnabled] = useState(true)
 
   // Mood sync state
@@ -239,7 +239,7 @@ export function ServicesTab() {
       if (gemini) {
         setGeminiStatus('valid')
       }
-      const model = allSettings.gemini_model || 'gemini-2.5-flash'
+      const model = allSettings.gemini_model || 'gemini-3.8-flash'
       setGeminiModel(model)
       setOriginalGeminiModel(model)
       setAiEnabled(allSettings.ai_enabled !== 'false')
@@ -776,8 +776,10 @@ export function ServicesTab() {
               onChange={(e) => setGeminiModel(e.target.value)}
               className="w-full px-3 py-2 bg-background border border-border/30 rounded-md text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
             >
-              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
-              <option value="gemini-2.5-pro">Gemini 2.5 Pro (Most capable)</option>
+              <option value="gemini-3.8-flash">Gemini 3.8 Flash (Recommended)</option>
+              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Fastest)</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Legacy)</option>
+              <option value="gemini-2.5-pro">Gemini 2.5 Pro (Legacy)</option>
             </select>
           </div>
 
